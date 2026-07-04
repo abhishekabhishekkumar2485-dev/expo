@@ -480,6 +480,7 @@ export const eas = [
       makePage('eas/workflows/examples/branch-cleanup.mdx'),
       makePage('eas/workflows/examples/deploy-to-production.mdx'),
       makePage('eas/workflows/examples/e2e-tests.mdx'),
+      makePage('eas/workflows/examples/posthog.mdx'),
     ]),
   ]),
   makeSection('EAS Build', [

@@ -4,6 +4,9 @@ description: A guide on installing and configuring PostHog for product analytics
 platforms: ['android', 'ios']
 ---
 
+import { Dataflow03Icon } from '@expo/styleguide-icons/outline/Dataflow03Icon';
+
+import { BoxLink } from '~/ui/components/BoxLink';
 import { Collapsible } from '~/ui/components/Collapsible';
 import { Prerequisites, Requirement } from '~/ui/components/Prerequisites';
 import { Terminal } from '~/ui/components/Snippet';
@@ -230,6 +233,17 @@ Render `<ReleaseTagger />` inside `<PostHogProvider>`. Every subsequent `capture
 ## Feature flags
 
 Once the provider is set up, feature flags work with no extra configuration. See [PostHog's feature flags for React Native](https://posthog.com/docs/feature-flags/installation/react-native) and [bootstrapping](https://posthog.com/docs/feature-flags/bootstrapping) to avoid a network round-trip on app start.
+
+## Usage with EAS Workflows
+
+[EAS Workflows](/eas/workflows/get-started/) can talk to PostHog from your CI pipeline. You can send events, create annotations, roll out feature flags, gate a rollout on a live metric, and upload source maps as workflow steps. These steps automatically read the `EXPO_PUBLIC_POSTHOG_*` and `POSTHOG_CLI_*` environment variables that `connect` sets.
+
+<BoxLink
+  title="PostHog examples for EAS Workflows"
+  description="Send events, roll out feature flags, gate rollouts on metrics, and upload source maps from a workflow."
+  href="/eas/workflows/examples/posthog"
+  Icon={Dataflow03Icon}
+/>
 
 ## Manage the integration
 
