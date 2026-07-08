@@ -1,0 +1,561 @@
+---
+title: PostHog recipes for EAS Workflows
+sidebar_title: EAS Workflows recipes
+description: A guided path from marking your first deploy in PostHog to gated rollouts, automatic kill switches, and approval-gated releases with EAS Workflows.
+---
+
+import { Prerequisites, Requirement } from '~/ui/components/Prerequisites';
+import { Terminal } from '~/ui/components/Snippet';
+
+[EAS Workflows](/eas/workflows/get-started/) can call PostHog directly from your CI pipeline: mark deploys, roll out and kill feature flags, gate a rollout on a live metric, and upload source maps, all as workflow steps. This page builds those steps up into a progressive delivery pipeline, one capability at a time, so you can see why each piece matters before you wire it in.
+
+Each section below is a complete, standalone workflow you can copy as-is. Read them in order for the full picture, or jump straight to the one you need:
+
+1. [Mark a deploy on your PostHog timeline](#mark-a-deploy-on-your-posthog-timeline)
+2. [Annotate a release](#annotate-a-release)
+3. [Upload source maps for error tracking](#upload-source-maps-for-error-tracking)
+4. [Release a feature behind a flag](#release-a-feature-behind-a-flag)
+5. [Gate a rollout on your error rate](#gate-a-rollout-on-your-error-rate)
+6. [Take a flag to full rollout with human approval](#take-a-flag-to-full-rollout-with-human-approval)
+7. [Turn a feature off with a kill switch](#turn-a-feature-off-with-a-kill-switch)
+8. [Turn a feature off automatically on an error spike](#turn-a-feature-off-automatically-on-an-error-spike)
+9. [Announce a release once users adopt it](#announce-a-release-once-users-adopt-it)
+
+There's also a compact [reference list of more recipes](#more-recipes) for narrower needs, and the full input reference for each function is in the [EAS Workflows syntax reference](/eas/workflows/syntax/#easposthog_capture_event).
+
+## Get started
+
+<Prerequisites>
+  <Requirement title="Connect a PostHog project">
+    Link a PostHog project to your Expo project and set the PostHog environment variables on EAS with:
+
+    <Terminal cmd={['$ eas integrations:posthog:connect']} />
+
+    See the rest of this guide for the full setup.
+
+  </Requirement>
+  <Requirement title="Connect your GitHub repository">
+    Your EAS project must be linked to a GitHub repository to run workflows on GitHub events, such as a push to `main`. See [Get started with EAS Workflows](/eas/workflows/get-started/#automate-workflows-with-github-events).
+  </Requirement>
+  <Requirement title="Personal API key for flags, metrics, and source maps">
+    Every function except `eas/posthog_capture_event` uses a PostHog personal API key. The key that `eas integrations:posthog:connect` collects covers source map uploads but usually lacks the other scopes, so create one key with everything up front:
+
+    1. In PostHog, open **Settings → Personal API keys** and create a key with the `feature_flag:read`, `feature_flag:write`, `query:read`, and `annotation:write` scopes, plus the source map upload preset.
+    2. Set it as the `POSTHOG_CLI_API_KEY` [environment variable](/eas/environment-variables/manage/) on EAS with the **Sensitive** visibility, or pass it to a step with the `api_key` input.
+
+  </Requirement>
+</Prerequisites>
+
+## Mark a deploy on your PostHog timeline
+
+Before you can act on any of this, your deploys need to be visible next to the user behavior they affect. Start here: send an event whenever you publish an update, so deploys line up with your PostHog data.
+
+```yaml .eas/workflows/mark-deploy.yml
+name: Publish update and mark it in PostHog
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: main
+
+  mark_deploy:
+    needs: [publish]
+    steps:
+      - uses: eas/posthog_capture_event
+        with:
+          event: ota_update_published
+          properties:
+            branch: main
+```
+
+### How it works
+
+1. The [`update`](/eas/workflows/pre-packaged-jobs#update) job publishes an EAS Update to the `main` branch.
+2. [`eas/posthog_capture_event`](/eas/workflows/syntax/#easposthog_capture_event) runs after it and records the deploy. Because no `distinct_id` is set, the event is anonymous and does not create a person profile.
+
+## Annotate a release
+
+Events are searchable, but they don't jump out on a chart. Add an annotation too, so a release shows up directly on the graphs it affects.
+
+```yaml .eas/workflows/annotate-release.yml
+name: Annotate release in PostHog
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: main
+
+  annotate:
+    needs: [publish]
+    steps:
+      - uses: eas/posthog_annotation
+        with:
+          content: Published update to main
+```
+
+### How it works
+
+1. The [`update`](/eas/workflows/pre-packaged-jobs#update) job publishes the update.
+2. [`eas/posthog_annotation`](/eas/workflows/syntax/#easposthog_annotation) pins an annotation to the current time, which appears on every PostHog chart for the project.
+
+## Upload source maps for error tracking
+
+Visibility into deploys is only useful if you can also see what broke. Upload source maps after you export your bundle, so PostHog can symbolicate JavaScript stack traces back to your original code. This recipe requires the PostHog Metro config from the [Source maps guide](/guides/using-posthog/#source-maps), which gives each bundle the chunk IDs that match it to its source maps.
+
+```yaml .eas/workflows/upload-sourcemaps.yml
+name: Publish update with source maps
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish_update:
+    steps:
+      - uses: eas/checkout
+      - uses: eas/install_node_modules
+      - run: npx expo export --source-maps
+      - uses: eas/posthog_upload_sourcemaps
+        with:
+          directory: dist
+      - run: npx eas-cli@latest update --branch main --skip-bundler --auto --non-interactive
+```
+
+### How it works
+
+1. `npx expo export --source-maps` writes the bundle and source maps to the **dist** directory.
+2. [`eas/posthog_upload_sourcemaps`](/eas/workflows/syntax/#easposthog_upload_sourcemaps) uploads the source maps to PostHog error tracking. It runs in the same job as the export so the files are on disk.
+3. `eas update --skip-bundler` publishes the exact bundle that was exported and uploaded, so stack traces from the published update match the source maps. See [error tracking](/guides/using-posthog/#error-tracking) for how symbolication works.
+
+## Release a feature behind a flag
+
+With deploys visible and errors traceable, you're ready to control exposure. Publish the update that contains a new feature, then turn its feature flag on, so the flag flips only after the code that reads it has shipped.
+
+```yaml .eas/workflows/feature-release.yml
+name: Ship a feature behind a PostHog flag
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: main
+
+  enable_flag:
+    needs: [publish]
+    steps:
+      - uses: eas/posthog_flag_rollout
+        with:
+          flag: new-checkout
+          active: true
+          rollout_percentage: 10
+```
+
+### How it works
+
+1. The [`update`](/eas/workflows/pre-packaged-jobs#update) job ships the code.
+2. [`eas/posthog_flag_rollout`](/eas/workflows/syntax/#easposthog_flag_rollout) enables the `new-checkout` flag and rolls it out to 10% of users. The `needs` dependency guarantees the flag turns on only after the update is live.
+
+## Gate a rollout on your error rate
+
+A rollout percentage is a guess until something checks it against reality. Instead of eyeballing a dashboard before widening a rollout, let a query decide: hold at a small percentage until the error rate proves it's safe to go further.
+
+```yaml .eas/workflows/gate-a-rollout.yml
+name: Gate a rollout on your error rate
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: main
+
+  canary:
+    needs: [publish]
+    steps:
+      - uses: eas/posthog_flag_rollout
+        with:
+          flag: new-checkout
+          active: true
+          rollout_percentage: 25
+
+  error_gate:
+    needs: [canary]
+    steps:
+      - uses: eas/posthog_wait_for_metric
+        with:
+          query: SELECT count() FROM events WHERE event = '$exception' AND timestamp > now() - INTERVAL 30 MINUTE
+          operator: lte
+          threshold: 5
+          interval_seconds: 60
+          timeout_seconds: 1800
+
+  full_rollout:
+    needs: [error_gate]
+    steps:
+      - uses: eas/posthog_flag_rollout
+        with:
+          flag: new-checkout
+          rollout_percentage: 100
+```
+
+### How it works
+
+1. The [`update`](/eas/workflows/pre-packaged-jobs#update) job ships the code, then [`eas/posthog_flag_rollout`](/eas/workflows/syntax/#easposthog_flag_rollout) exposes it to 25% of users.
+2. [`eas/posthog_wait_for_metric`](/eas/workflows/syntax/#easposthog_wait_for_metric) runs a [HogQL](https://posthog.com/docs/hogql) query and waits until the exception count over the last 30 minutes is 5 or fewer. If a bad rollout keeps the count elevated, the gate times out and fails, so `full_rollout` never runs.
+3. Once the gate clears, `eas/posthog_flag_rollout` widens the flag to 100%.
+
+## Take a flag to full rollout with human approval
+
+Some rollouts are safe to automate end to end. For the ones that aren't, add a person before the last step.
+
+```yaml .eas/workflows/approved-ga.yml
+name: Take a feature to GA with human approval
+
+jobs:
+  approve:
+    name: Approve new-checkout GA?
+    type: require-approval
+
+  go_full:
+    needs: [approve]
+    steps:
+      - uses: eas/posthog_flag_rollout
+        with:
+          flag: new-checkout
+          active: true
+          rollout_percentage: 100
+
+  bookkeeping:
+    needs: [go_full]
+    steps:
+      - uses: eas/posthog_capture_event
+        with:
+          event: feature_went_ga
+          properties:
+            flag: new-checkout
+```
+
+### How it works
+
+1. The [`require-approval`](/eas/workflows/pre-packaged-jobs#require-approval) job pauses the workflow until a person approves or rejects it in the EAS dashboard.
+2. If approved, [`eas/posthog_flag_rollout`](/eas/workflows/syntax/#easposthog_flag_rollout) rolls the flag out to 100%. If rejected, the job fails and `go_full` is skipped.
+3. The follow-up event records when the flag reached full rollout.
+
+## Turn a feature off with a kill switch
+
+Every rollout needs a fast way back out. This workflow has no `on` trigger, so it only runs when a person starts it during an incident.
+
+```yaml .eas/workflows/kill-switch.yml
+name: Disable new-checkout now
+
+jobs:
+  disable_flag:
+    steps:
+      - uses: eas/posthog_flag_rollout
+        with:
+          flag: new-checkout
+          active: false
+
+  audit_trail:
+    needs: [disable_flag]
+    steps:
+      - uses: eas/posthog_capture_event
+        with:
+          event: kill_switch_pulled
+          properties:
+            flag: new-checkout
+```
+
+### How it works
+
+1. Start it during an incident with:
+
+   <Terminal cmd={['$ eas workflow:run kill-switch.yml']} />
+
+2. [`eas/posthog_flag_rollout`](/eas/workflows/syntax/#easposthog_flag_rollout) turns the flag off for everyone, and the follow-up event records when the kill switch was pulled and for which flag.
+
+## Turn a feature off automatically on an error spike
+
+A manual kill switch depends on someone noticing. Wire the same action to the same kind of gate you used to widen the rollout, so it fires without anyone watching.
+
+```yaml .eas/workflows/auto-kill-switch.yml
+name: Turn off new-checkout automatically on an error spike
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: main
+
+  error_gate:
+    needs: [publish]
+    steps:
+      - uses: eas/posthog_wait_for_metric
+        with:
+          query: SELECT count() FROM events WHERE event = '$exception' AND timestamp > now() - INTERVAL 10 MINUTE
+          operator: lt
+          threshold: 20
+          interval_seconds: 60
+          timeout_seconds: 600
+
+  auto_kill_switch:
+    after: [error_gate]
+    if: ${{ failure() }}
+    steps:
+      - uses: eas/posthog_flag_rollout
+        with:
+          flag: new-checkout
+          active: false
+      - uses: eas/posthog_capture_event
+        with:
+          event: auto_kill_switch_pulled
+          properties:
+            flag: new-checkout
+```
+
+### How it works
+
+1. The [`update`](/eas/workflows/pre-packaged-jobs#update) job publishes the update, and [`eas/posthog_wait_for_metric`](/eas/workflows/syntax/#easposthog_wait_for_metric) waits until the exception count over the last 10 minutes is under 20. If a bad update keeps the count elevated, the gate times out and fails.
+2. The `auto_kill_switch` job uses [`after`](/eas/workflows/syntax/#jobsjob_idafter) with [`if: ${{ failure() }}`](/eas/workflows/syntax/#jobsjob_idif). A `needs` dependency would not work here because a job is skipped when a `needs` dependency fails, before its `if` condition is evaluated. `failure()` reflects the whole workflow run, not just `error_gate`. Keep this workflow focused on the update and its gate so `auto_kill_switch` fires only when the gate itself fails.
+3. [`eas/posthog_flag_rollout`](/eas/workflows/syntax/#easposthog_flag_rollout) turns the flag off, the same action as the manual kill switch, and the follow-up event records that it happened automatically.
+
+## Announce a release once users adopt it
+
+A deploy finishing isn't the same as a release landing. Wait for real adoption before telling anyone.
+
+```yaml .eas/workflows/announce-on-adoption.yml
+name: Announce release once adopted
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: main
+
+  adoption_gate:
+    needs: [publish]
+    steps:
+      - uses: eas/posthog_wait_for_metric
+        with:
+          query: SELECT count(DISTINCT distinct_id) FROM events WHERE timestamp > now() - INTERVAL 1 HOUR
+          operator: gte
+          threshold: 50
+          interval_seconds: 120
+          timeout_seconds: 3600
+
+  announce:
+    needs: [adoption_gate]
+    type: slack
+    environment: production
+    params:
+      webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+      message: The latest update is live and 50 or more users are on it.
+```
+
+### How it works
+
+1. The [`update`](/eas/workflows/pre-packaged-jobs#update) job publishes the update.
+2. [`eas/posthog_wait_for_metric`](/eas/workflows/syntax/#easposthog_wait_for_metric) waits until at least 50 distinct users have sent events in the last hour.
+3. The [`slack`](/eas/workflows/pre-packaged-jobs#slack) job announces the release once the gate clears. Set `SLACK_WEBHOOK_URL` as an [environment variable](/eas/environment-variables/manage/) on EAS.
+
+## More recipes
+
+The rest are for narrower needs. Each is still a complete workflow, just without the full walkthrough above.
+
+### Wait for a specific event
+
+Hold the workflow until a specific event arrives, such as a post-deploy smoke test reporting success, instead of gating on an aggregate metric.
+
+```yaml .eas/workflows/wait-for-smoke-test.yml
+name: Wait for smoke test to pass
+
+jobs:
+  wait_for_smoke_test:
+    steps:
+      - uses: eas/posthog_wait_for_query
+        with:
+          query: SELECT count() > 0 FROM events WHERE event = 'smoke_test_passed' AND timestamp > now() - INTERVAL 30 MINUTE
+          interval_seconds: 15
+          timeout_seconds: 600
+```
+
+[`eas/posthog_wait_for_query`](/eas/workflows/syntax/#easposthog_wait_for_query) clears once the query returns true. The 30-minute window keeps an old smoke-test event from clearing the gate immediately.
+
+### Gate an EAS Update channel rollout
+
+If you roll out with EAS Update channel percentages instead of a feature flag, the same gate pattern from [Gate a rollout on your error rate](#gate-a-rollout-on-your-error-rate) applies to `eas channel:rollout`.
+
+```yaml .eas/workflows/staged-rollout.yml
+name: Staged rollout gated on errors
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: rollout
+
+  start_at_10:
+    needs: [publish]
+    steps:
+      - run: npx eas-cli@latest channel:rollout production --action create --branch rollout --percent 10 --runtime-version 1.0.0 --non-interactive
+
+  error_gate:
+    needs: [start_at_10]
+    steps:
+      - id: gate
+        uses: eas/posthog_wait_for_metric
+        with:
+          query: SELECT count() FROM events WHERE event = '$exception' AND timestamp > now() - INTERVAL 15 MINUTE
+          operator: lt
+          threshold: 10
+          interval_seconds: 60
+          timeout_seconds: 900
+      - uses: eas/posthog_capture_event
+        with:
+          event: rollout_gate_cleared
+          properties:
+            error_count: ${{ steps.gate.outputs.value }}
+
+  widen_to_100:
+    needs: [error_gate]
+    steps:
+      - run: npx eas-cli@latest channel:rollout production --action end --outcome republish-and-revert --non-interactive
+```
+
+The `--runtime-version` value must match the runtime version of the published update. The follow-up event records the count that cleared the gate through the step's `value` output.
+
+### Roll back an EAS Update channel automatically
+
+The channel equivalent of the [automatic kill switch](#turn-a-feature-off-automatically-on-an-error-spike) above: if the error rate stays elevated, roll users back to the embedded update instead of turning off a flag.
+
+```yaml .eas/workflows/auto-rollback.yml
+name: Publish update with auto-rollback
+
+on:
+  push:
+    branches: ['main']
+
+jobs:
+  publish:
+    type: update
+    params:
+      branch: main
+
+  error_gate:
+    needs: [publish]
+    steps:
+      - uses: eas/posthog_wait_for_metric
+        with:
+          query: SELECT count() FROM events WHERE event = '$exception' AND timestamp > now() - INTERVAL 10 MINUTE
+          operator: lt
+          threshold: 20
+          interval_seconds: 60
+          timeout_seconds: 600
+
+  rollback:
+    after: [error_gate]
+    if: ${{ failure() }}
+    steps:
+      - run: npx eas-cli@latest update:roll-back-to-embedded --branch main --runtime-version 1.0.0 --message "Auto-rollback after error spike" --non-interactive
+      - uses: eas/posthog_capture_event
+        with:
+          event: auto_rollback_triggered
+          properties:
+            branch: main
+```
+
+As with the automatic kill switch, `after` plus `if: ${{ failure() }}` is required here because a `needs` dependency would skip `rollback` before `if` is ever evaluated. The `--runtime-version` value must match the runtime version of the update to roll back.
+
+### Check your nightly error budget
+
+Run a gate on a schedule instead of after a deploy, as a standalone health check.
+
+```yaml .eas/workflows/error-budget.yml
+name: Nightly error-budget check
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  assert_error_budget:
+    steps:
+      - uses: eas/posthog_wait_for_metric
+        with:
+          query: SELECT count() FROM events WHERE event = '$exception' AND timestamp > now() - INTERVAL 24 HOUR
+          operator: lt
+          threshold: 100
+          interval_seconds: 30
+          timeout_seconds: 60
+```
+
+The [`on.schedule.cron`](/eas/workflows/syntax/#onschedulecron) trigger runs this independently of any deploy, so it works as a standing health check rather than a gate on a specific rollout.
+
+### Mark a store submission
+
+`eas/posthog_capture_event` works the same way for native releases as it does for updates.
+
+```yaml .eas/workflows/store-release.yml
+name: Build, submit to the store, mark it in PostHog
+
+jobs:
+  build:
+    type: build
+    params:
+      platform: ios
+      profile: production
+
+  submit:
+    needs: [build]
+    type: submit
+    params:
+      build_id: ${{ needs.build.outputs.build_id }}
+      profile: production
+
+  mark_release:
+    needs: [submit]
+    steps:
+      - uses: eas/posthog_capture_event
+        with:
+          event: store_build_submitted
+          properties:
+            platform: ios
+            profile: production
+```
+
+## Important notes
+
+- **Two kinds of key.** `eas/posthog_capture_event` uses your public project API key (`EXPO_PUBLIC_POSTHOG_API_KEY`). The other functions use a personal API key (`POSTHOG_CLI_API_KEY`) plus a project ID, and each needs specific scopes. See the [syntax reference](/eas/workflows/syntax/#easposthog_flag_rollout) for the scope required by each function.
+- **Gates fail closed.** `eas/posthog_wait_for_metric` and `eas/posthog_wait_for_query` have no `ignore_error` input. When a gate times out, the step fails, which is what lets it stop a rollout.
+- **Gates pass as soon as the condition holds.** A gate checking for a low error count can pass on its first check, including right after a deploy, before users are on the new update. Pair it with an adoption gate, like the one in [Announce a release once users adopt it](#announce-a-release-once-users-adopt-it), when you need errors to have had a chance to surface first.
+- **Scope queries to the current run.** Event and metric queries return historical data. Add a `timestamp > now() - INTERVAL ...` filter, or a property unique to this run, so an old event does not clear a gate immediately. If your app uses [release tagging](/guides/using-posthog/#release-tagging), filter on `properties.expo_update_id` to scope a gate to the new release.
+- **The `run` steps need an Expo token.** The recipes that call `eas` in `run` steps require an `EXPO_TOKEN` environment variable on the job. See [personal access tokens](/accounts/programmatic-access/).

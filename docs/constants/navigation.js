@@ -376,7 +376,8 @@ export const general = [
       makePage('guides/using-bugsnag.mdx'),
       makePage('guides/using-logrocket.mdx'),
       makePage('guides/using-vexo.mdx'),
-      makePage('guides/using-posthog.mdx'),
+      makePage('guides/using-posthog/index.mdx'),
+      makePage('guides/using-posthog/recipes.mdx'),
     ]),
     makeGroup('Authentication', [
       makePage('guides/using-authentication.mdx'),
@@ -480,7 +481,6 @@ export const eas = [
       makePage('eas/workflows/examples/branch-cleanup.mdx'),
       makePage('eas/workflows/examples/deploy-to-production.mdx'),
       makePage('eas/workflows/examples/e2e-tests.mdx'),
-      makePage('eas/workflows/examples/posthog.mdx'),
     ]),
   ]),
   makeSection('EAS Build', [
