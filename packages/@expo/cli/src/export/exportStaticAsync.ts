@@ -29,13 +29,11 @@ import {
   sortMatchedAssetsByEntryPoints,
 } from '../start/server/metro/serializeHtml';
 import { learnMore } from '../utils/link';
-import { event } from './events';
+import { event, debugEvent } from './events';
 import { generateFaviconAssetAsync } from './favicon';
 import { persistMetroAssetsAsync } from './persistMetroAssets';
 import type { ExportAssetMap } from './saveAssets';
 import { getFilesFromSerialAssets } from './saveAssets';
-
-const debug = require('debug')('expo:export:generateStaticRoutes') as typeof console.log;
 
 type ExtraScriptTag = {
   platform: string;
@@ -245,7 +243,9 @@ export async function exportFromServerAsync(
 
   makeRuntimeEntryPointsAbsolute(manifest, appDir);
 
-  debug('Routes:\n', inspect(manifest, { colors: true, depth: null }));
+  debugEvent('static:routes_manifest', {
+    routes: inspect(manifest, { colors: true, depth: null }),
+  });
 
   const loaderReferenceCount = new Set(
     resources.artifacts?.flatMap((artifact) => artifact.metadata?.loaderReferences ?? [])
@@ -752,12 +752,11 @@ async function exportLoadersAsync({
   }
 
   if (entryPoints.length === 0) {
-    debug('No routes with loaders to bundle');
     return;
   }
 
   const entryPointModules = entryPoints.map((e) => e.page);
-  debug('Bundling loaders for routes:', entryPointModules);
+  debugEvent('static:bundling_loaders', { modules: entryPointModules });
 
   await devServer.exportExpoRouterLoadersAsync({
     platform,
@@ -779,8 +778,6 @@ async function exportLoadersAsync({
       }
     },
   });
-
-  debug('Exported loaders for routes:', entryPointModules);
 }
 
 // NOTE(@hassankhan): We should ideally persist the manifest to `files` only once instead of
