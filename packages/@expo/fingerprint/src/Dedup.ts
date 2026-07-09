@@ -58,9 +58,17 @@ function findDuplicatedSourceIndex(
       shouldSwapSource,
     ];
   }
+  if (source.type === 'package') {
+    return [
+      newSources.findIndex(
+        (item) => item.type === 'package' && item.filePath === source.filePath
+      ) ?? null,
+      shouldSwapSource,
+    ];
+  }
 
   for (const [index, existingSource] of newSources.entries()) {
-    if (existingSource.type === 'contents') {
+    if (existingSource.type === 'contents' || existingSource.type === 'package') {
       continue;
     }
     if (isDescendant(source, existingSource, projectRoot)) {

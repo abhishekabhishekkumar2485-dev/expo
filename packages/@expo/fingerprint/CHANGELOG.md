@@ -8,6 +8,8 @@
 
 ### 🎉 New features
 
+- Added a `package` source type that hashes a dependency by its `package.json` name and version. ([#47667](https://github.com/expo/expo/pull/47667) by [@kudo](https://github.com/kudo))
+
 ### 🐛 Bug fixes
 
 - Fixed unstable fingerprint for iOS precompiled modules. ([#46466](https://github.com/expo/expo/pull/46466) by [@kudo](https://github.com/kudo))

@@ -13,8 +13,10 @@ import type {
   HashResultContents,
   HashResultDir,
   HashResultFile,
+  HashResultPackage,
   HashSource,
   HashSourceContents,
+  HashSourcePackage,
   NormalizedOptions,
 } from '../Fingerprint.types';
 import { createLimiter, type Limiter } from '../utils/Concurrency';
@@ -76,6 +78,9 @@ export async function createFingerprintSourceAsync(
         createDirHashResultsAsync,
         `createDirHashResultsAsync(${source.filePath})`
       )(source.filePath, limiter, projectRoot, options);
+      break;
+    case 'package':
+      result = await createPackageHashResultsAsync(source, projectRoot, options);
       break;
     default:
       throw new Error('Unsupported source type');
@@ -288,6 +293,45 @@ export async function createContentsHashResultsAsync(
 }
 
 /**
+ * Create a `HashResult` for a package from its `package.json` name and version.
+ * Returns null when the `package.json` is missing or ignored.
+ */
+export async function createPackageHashResultsAsync(
+  source: HashSourcePackage,
+  projectRoot: string,
+  options: NormalizedOptions
+): Promise<HashResultPackage | null> {
+  if (isIgnoredPathWithMatchObjects(source.filePath, options.ignorePathMatchObjects)) {
+    return null;
+  }
+
+  let name = '';
+  let version = '';
+  try {
+    const raw = await fs.readFile(path.join(projectRoot, source.filePath), 'utf8');
+    const packageJson = JSON.parse(raw);
+    name = packageJson.name ?? '';
+    version = packageJson.version ?? '';
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+
+  const hex = createHash(options.hashAlgorithm)
+    .update(JSON.stringify({ name, version }))
+    .digest('hex');
+  const debugInfo = options.debug ? { path: source.filePath, name, version, hash: hex } : undefined;
+  return {
+    type: 'package',
+    id: createSourceId(source),
+    hex,
+    ...(debugInfo ? { debugInfo } : undefined),
+  };
+}
+
+/**
  * Create id from given source
  */
 export function createSourceId(source: HashSource): string {
@@ -297,6 +341,8 @@ export function createSourceId(source: HashSource): string {
     case 'file':
       return source.overrideHashKey ?? source.filePath;
     case 'dir':
+      return source.overrideHashKey ?? source.filePath;
+    case 'package':
       return source.overrideHashKey ?? source.filePath;
     default:
       throw new Error('Unsupported source type');
