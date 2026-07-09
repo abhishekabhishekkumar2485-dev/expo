@@ -3,13 +3,15 @@
 exports[`normalizeOptionsAsync should return the default options if no options are provided 1`] = `
 {
   "concurrentIoLimit": 1,
+  "configPluginTrace": "scoped",
   "enableReactImportsPatcher": false,
   "hashAlgorithm": "sha1",
+  "packageMode": true,
   "platforms": [
     "android",
     "ios",
   ],
-  "sourceSkips": 512,
+  "sourceSkips": 515,
   "useCNGForPlatforms": {
     "android": false,
     "ios": false,

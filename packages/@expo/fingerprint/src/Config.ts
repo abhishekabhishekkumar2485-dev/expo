@@ -41,6 +41,7 @@ export async function loadConfigAsync(
   unregisterMuteLogs?.();
 
   const supportedConfigKeys: (keyof Config)[] = [
+    'preset',
     'concurrentIoLimit',
     'hashAlgorithm',
     'ignorePaths',

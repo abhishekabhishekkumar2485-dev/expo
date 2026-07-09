@@ -66,7 +66,25 @@ export type FingerprintDiffItem =
 export type Platform = 'android' | 'ios';
 export type ProjectWorkflow = 'generic' | 'managed' | 'unknown';
 
+/**
+ * A named bundle of fingerprint settings that trades fidelity for fewer false positives.
+ * - `strict`: highest fidelity (the historical default behavior).
+ * - `balanced`: the default. Ignores app version and string runtime version churn and hashes
+ *   autolinked packages by version - a better first-time experience.
+ * - `relaxed`: for building multiple variants from one native project. Additionally ignores app
+ *   names, bundle identifiers, schemes, and assets.
+ */
+export type FingerprintPreset = 'strict' | 'balanced' | 'relaxed';
+
 export interface Options {
+  /**
+   * The preset to derive default settings from.
+   * A preset sets `sourceSkips` and related defaults; any explicitly provided option (e.g.
+   * `sourceSkips`) takes precedence over the preset.
+   * @default 'balanced'
+   */
+  preset?: FingerprintPreset;
+
   /**
    * Limit native files to those for specified platforms.
    * @default ['android', 'ios']
@@ -152,6 +170,7 @@ type SourceSkipsKeys = keyof typeof SourceSkips;
  */
 export type Config = Pick<
   Options,
+  | 'preset'
   | 'concurrentIoLimit'
   | 'hashAlgorithm'
   | 'ignorePaths'
@@ -349,6 +368,18 @@ export type NormalizedOptions = Omit<Options, 'ignorePaths'> & {
    * Indicate whether the project is using CNG for each platform.
    */
   useCNGForPlatforms: Record<Platform, boolean>;
+
+  /**
+   * Hash autolinked packages by their `package.json` name+version instead of their native dirs.
+   * Derived from the resolved preset.
+   */
+  packageMode: boolean;
+
+  /**
+   * How config-plugin modules loaded during config evaluation are hashed.
+   * Derived from the resolved preset.
+   */
+  configPluginTrace: 'full' | 'scoped';
 };
 
 //#endregion

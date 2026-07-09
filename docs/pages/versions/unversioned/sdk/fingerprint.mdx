@@ -45,6 +45,24 @@ If you wish to use `@expo/fingerprint` as a standalone package, you can install 
 
 `@expo/fingerprint` provides defaults that should work for most projects, but also provides a few ways to configure the fingerprinting process to better fit your app structure and workflow.
 
+### Presets
+
+A preset is a named bundle of settings that trades some fidelity for fewer false positives (a different fingerprint from a change that doesn't affect the native build). Set it with the `preset` field in **fingerprint.config.js** or the `--preset` CLI flag. An explicitly provided `sourceSkips` overrides the preset's source skips.
+
+| Preset       | Description                                                                                                                                                                                                             |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `strict`     | Highest fidelity. Hashes autolinked packages and config plugins by their full native directories.                                                                                                                          |
+| `balanced`   | **The default.** Ignores app version and string runtime version churn, hashes autolinked packages by their `package.json` version, and collapses `node_modules` config plugins to their package version. Best for most apps. |
+| `relaxed`    | For building multiple variants from one native project. In addition to `balanced`, ignores app names, Android package, iOS bundle identifier, schemes, and assets. Still hashes the config-plugins list, so adding a plugin changes the fingerprint. |
+
+```js fingerprint.config.js
+/** @type {import('@expo/fingerprint').Config} */
+const config = {
+  preset: 'relaxed',
+};
+module.exports = config;
+```
+
 ### .fingerprintignore
 
 Placed in your project root, **.fingerprintignore** is a [**.gitignore**](https://git-scm.com/docs/gitignore#_pattern_format)-like ignore mechanism used to exclude files from hash calculation. All pattern paths are relative to the project root. It behaves similarly but instead uses `minimatch` for pattern matching which has some [limitations](#limitations) (see documentation for `ignorePaths` under [Options](#options)).

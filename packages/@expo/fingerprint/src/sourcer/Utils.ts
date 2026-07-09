@@ -2,7 +2,29 @@ import fs from 'fs/promises';
 import path from 'path';
 
 import type { HashSource } from '../Fingerprint.types';
-import { toPosixPath } from '../utils/Path';
+import { getNodeModulesPackageJsonPath, pathExistsAsync, toPosixPath } from '../utils/Path';
+
+/**
+ * Build a hash source for an autolinked package's native directory.
+ * In package mode we hash the owning `package.json` (name+version) instead of the whole directory,
+ * so patch-level or cross-machine churn inside the package is ignored. Falls back to a `dir` source
+ * when the owning `package.json` can't be resolved (e.g. a local module outside `node_modules`), so
+ * no source is ever lost.
+ */
+export async function getAutolinkingDirHashSourceAsync(
+  projectRoot: string,
+  dirRelativePath: string,
+  reasons: string[],
+  packageMode: boolean
+): Promise<HashSource> {
+  if (packageMode) {
+    const packageJsonPath = getNodeModulesPackageJsonPath(dirRelativePath);
+    if (packageJsonPath && (await pathExistsAsync(path.join(projectRoot, packageJsonPath)))) {
+      return { type: 'package', filePath: packageJsonPath, reasons };
+    }
+  }
+  return { type: 'dir', filePath: dirRelativePath, reasons };
+}
 
 export async function getFileBasedHashSourceAsync(
   projectRoot: string,

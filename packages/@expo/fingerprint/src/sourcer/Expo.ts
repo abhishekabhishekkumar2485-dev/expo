@@ -9,9 +9,10 @@ import semver from 'semver';
 import type { LoadedModuleSource } from '../ExpoConfigLoader';
 import { resolveExpoAutolinkingCliPath } from '../ExpoResolver';
 import type { HashSource, NormalizedOptions } from '../Fingerprint.types';
-import { toPosixPath } from '../utils/Path';
+import { getNodeModulesPackageJsonPath, pathExistsAsync, toPosixPath } from '../utils/Path';
 import { SourceSkips } from './SourceSkips';
 import {
+  getAutolinkingDirHashSourceAsync,
   getFileBasedHashSourceAsync,
   maybeGetRealPathAsync,
   relativizeJsonPaths,
@@ -112,19 +113,26 @@ export async function getExpoConfigSourcesAsync(
   });
 
   // config plugins
-  const configPluginModules: HashSource[] = (loadedModules ?? []).map((loadedModule) =>
-    loadedModule.type === 'file'
-      ? {
-          type: 'file',
-          filePath: loadedModule.path,
-          reasons: ['expoConfigPlugins'],
-        }
-      : {
+  // In `scoped` trace mode, node_modules plugin files are collapsed to their package name+version
+  // (fewer false positives); in-repo files and virtual modules are always hashed directly.
+  const configPluginModules: HashSource[] = await Promise.all(
+    (loadedModules ?? []).map(async (loadedModule): Promise<HashSource> => {
+      if (loadedModule.type === 'contents') {
+        return {
           type: 'contents',
           id: loadedModule.id,
           contents: loadedModule.contents,
           reasons: ['expoConfigPlugins'],
+        };
+      }
+      if (options.configPluginTrace === 'scoped') {
+        const packageJsonPath = getNodeModulesPackageJsonPath(loadedModule.path);
+        if (packageJsonPath && (await pathExistsAsync(path.join(projectRoot, packageJsonPath)))) {
+          return { type: 'package', filePath: packageJsonPath, reasons: ['expoConfigPlugins'] };
         }
+      }
+      return { type: 'file', filePath: loadedModule.path, reasons: ['expoConfigPlugins'] };
+    })
   );
   results.push(...configPluginModules);
 
@@ -309,7 +317,14 @@ export async function getExpoAutolinkingAndroidSourcesAsync(
         const filePath = toPosixPath(path.relative(realProjectRoot, project.sourceDir));
         project.sourceDir = filePath; // use relative path for the dir
         debug(`Adding expo-modules-autolinking android dir - ${chalk.dim(filePath)}`);
-        results.push({ type: 'dir', filePath, reasons });
+        results.push(
+          await getAutolinkingDirHashSourceAsync(
+            realProjectRoot,
+            filePath,
+            reasons,
+            options.packageMode
+          )
+        );
         // `aarProjects` is present in project starting from SDK 53+.
         if (project.aarProjects) {
           for (const aarProject of project.aarProjects) {
@@ -334,7 +349,14 @@ export async function getExpoAutolinkingAndroidSourcesAsync(
           const filePath = toPosixPath(path.relative(realProjectRoot, plugin.sourceDir));
           plugin.sourceDir = filePath; // use relative path for the dir
           debug(`Adding expo-modules-autolinking android dir - ${chalk.dim(filePath)}`);
-          results.push({ type: 'dir', filePath, reasons });
+          results.push(
+            await getAutolinkingDirHashSourceAsync(
+              realProjectRoot,
+              filePath,
+              reasons,
+              options.packageMode
+            )
+          );
         }
       }
       // Backward compatibility for SDK versions earlier than 53
@@ -403,7 +425,14 @@ export async function getExpoAutolinkingIosSourcesAsync(
         const filePath = toPosixPath(path.relative(realProjectRoot, pod.podspecDir));
         pod.podspecDir = filePath; // use relative path for the dir
         debug(`Adding expo-modules-autolinking ios dir - ${chalk.dim(filePath)}`);
-        results.push({ type: 'dir', filePath, reasons });
+        results.push(
+          await getAutolinkingDirHashSourceAsync(
+            realProjectRoot,
+            filePath,
+            reasons,
+            options.packageMode
+          )
+        );
       }
     }
     results.push({
