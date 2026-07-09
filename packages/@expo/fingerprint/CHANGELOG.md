@@ -11,6 +11,7 @@
 ### 🐛 Bug fixes
 
 - Fixed unstable fingerprint for iOS precompiled modules. ([#46466](https://github.com/expo/expo/pull/46466) by [@kudo](https://github.com/kudo))
+- Fixed a crash on local TypeScript config plugins by capturing config-plugin modules with a compile hook. ([#47666](https://github.com/expo/expo/pull/47666) by [@kudo](https://github.com/kudo))
 
 ### 💡 Others
 

@@ -9,7 +9,7 @@ import path from 'path';
 import resolveFrom from 'resolve-from';
 
 import { DEFAULT_IGNORE_PATHS } from './Options';
-import { isIgnoredPath } from './utils/Path';
+import { isIgnoredPath, toPosixPath } from './utils/Path';
 
 async function runAsync(programName: string, args: string[] = []) {
   if (args[0] == null) {
@@ -23,39 +23,19 @@ async function runAsync(programName: string, args: string[] = []) {
   setNodeEnv('development');
   require('@expo/env').load(projectRoot);
 
-  const loadedModulesBefore = new Set(Object.keys(module._cache));
-
-  const { getConfig } = require(resolveFrom(path.resolve(projectRoot), 'expo/config'));
-  const config = await getConfig(projectRoot, {
-    skipSDKVersionRequirement: true,
-  });
-
-  const virtualModuleNames = new Set<string>();
-  const loadedModules: string[] = [];
-
-  // TODO(@kitten): Don't rely on `module._cache` for this over Node loader hooks
-  // The module cache isn't reflective of real files necessarily
-  for (const id of Object.keys(module._cache)) {
-    if (loadedModulesBefore.has(id)) {
-      continue;
-    }
-
-    let filename = id;
-
-    const mod = module._cache[id] as any;
-    if (mod != null && mod.filename != null) {
-      filename = mod.filename || id;
-    }
-
-    // NOTE(@kitten): Virtual modules may be placed on `module._cache` and we can't rely on the ID to be accurate
-    // The IDs are also not necessarily paths. We prefer `filename`, and trust they exist, but if the ID mismatches
-    // with the module name, we use the ID, and ignore the filename entirely
-    if (filename !== id) {
-      virtualModuleNames.add(filename);
-      loadedModules.push(id);
-    } else {
-      loadedModules.push(filename);
-    }
+  // Capture modules as `getConfig()` compiles them rather than diffing `module._cache` afterwards.
+  // The cache only keeps paths; at compile time we still have the authoritative filename (so a
+  // transpiled `.ts` plugin isn't mistaken for a non-existent `.js`) and the source content (so a
+  // module with no file on disk can still be hashed instead of crashing).
+  const { getCapturedModules, uninstall } = installModuleCaptureHook();
+  let config;
+  try {
+    const { getConfig } = require(resolveFrom(path.resolve(projectRoot), 'expo/config'));
+    config = await getConfig(projectRoot, {
+      skipSDKVersionRequirement: true,
+    });
+  } finally {
+    uninstall();
   }
 
   const ignoredPaths = [
@@ -63,39 +43,15 @@ async function runAsync(programName: string, args: string[] = []) {
     ...(await loadIgnoredPathsAsync(ignoredFile)),
   ];
 
-  const filteredLoadedModules = loadedModules.filter(
-    (modulePath) => !virtualModuleNames.has(modulePath)
+  const loadedModules = await resolveLoadedModuleSourcesAsync(
+    getCapturedModules(),
+    projectRoot,
+    ignoredPaths
   );
-
-  const existingLoadedModules = (
-    await Promise.all(
-      filteredLoadedModules.map(async (modulePath) => {
-        const relativePath = path.relative(projectRoot, modulePath);
-        if (isIgnoredPath(relativePath, ignoredPaths)) {
-          return null;
-        }
-
-        try {
-          const stat = await fs.stat(modulePath);
-          if (!stat.isFile()) {
-            return null;
-          }
-
-          return relativePath;
-        } catch (error: any) {
-          // Filter out virtual paths / non-existent files
-          if (error.code === 'ENOENT') {
-            return null;
-          }
-          throw error;
-        }
-      })
-    )
-  ).filter((modulePath) => modulePath != null);
 
   const result = JSON.stringify({
     config,
-    loadedModules: existingLoadedModules,
+    loadedModules,
   });
 
   if (process.send) {
@@ -140,6 +96,104 @@ async function loadIgnoredPathsAsync(ignoredFile: string | null) {
   } catch {}
 
   return ignorePaths;
+}
+
+/**
+ * A CommonJS module observed while `installModuleCaptureHook()` was active.
+ */
+export interface CapturedModule {
+  /** The module id (cache key). May diverge from `filename` for virtual modules. */
+  id: string;
+  /** The filename Node compiled the module under. Authoritative even for transpiled sources. */
+  filename: string;
+  /** The source content Node executed for the module. */
+  content: string;
+}
+
+/**
+ * A config-plugin source produced from a captured module.
+ * A module backed by a real file becomes a `file` source (hashed from disk, so it stays
+ * transpiler-independent); one with no file on disk becomes a `contents` source carrying the
+ * captured body.
+ */
+export type LoadedModuleSource =
+  | { type: 'file'; path: string }
+  | { type: 'contents'; id: string; contents: string };
+
+/**
+ * Observe every CommonJS module compiled while the hook is installed.
+ * We hook `Module.prototype._compile` instead of diffing `module._cache` afterwards so we keep the
+ * authoritative filename and source content of each module - see the note in `runAsync`.
+ */
+export function installModuleCaptureHook(): {
+  getCapturedModules: () => CapturedModule[];
+  uninstall: () => void;
+} {
+  const moduleProto = (module as unknown as { prototype: ModuleCompilePrototype }).prototype;
+  const capturedModules: CapturedModule[] = [];
+  const originalCompile = moduleProto._compile;
+  moduleProto._compile = function (this: { id?: string }, content: string, filename: string) {
+    capturedModules.push({ id: this.id ?? filename, filename, content });
+    return originalCompile.call(this, content, filename);
+  };
+  return {
+    getCapturedModules: () => capturedModules,
+    uninstall: () => {
+      moduleProto._compile = originalCompile;
+    },
+  };
+}
+
+interface ModuleCompilePrototype {
+  _compile: (this: { id?: string }, content: string, filename: string) => unknown;
+}
+
+/**
+ * Turn captured modules into config-plugin sources, dropping ignored paths.
+ * A real file becomes a `file` source; a module with no file on disk (virtual / compiled from a
+ * string) becomes a `contents` source keyed by its project-relative path so it stays stable across
+ * runs. A path that exists but is not a file (e.g. a directory) is skipped.
+ */
+export async function resolveLoadedModuleSourcesAsync(
+  capturedModules: CapturedModule[],
+  projectRoot: string,
+  ignoredPaths: string[]
+): Promise<LoadedModuleSource[]> {
+  const results: LoadedModuleSource[] = [];
+  const seen = new Set<string>();
+
+  for (const { filename, content } of capturedModules) {
+    const relativePath = toPosixPath(path.relative(projectRoot, filename));
+    if (seen.has(relativePath)) {
+      continue;
+    }
+    seen.add(relativePath);
+
+    if (isIgnoredPath(relativePath, ignoredPaths)) {
+      continue;
+    }
+
+    let existsAsFile = false;
+    let missing = false;
+    try {
+      const stat = await fs.stat(filename);
+      existsAsFile = stat.isFile();
+    } catch (error: any) {
+      if (error.code === 'ENOENT') {
+        missing = true;
+      } else {
+        throw error;
+      }
+    }
+
+    if (existsAsFile) {
+      results.push({ type: 'file', path: relativePath });
+    } else if (missing) {
+      results.push({ type: 'contents', id: relativePath, contents: content });
+    }
+  }
+
+  return results;
 }
 
 /**
