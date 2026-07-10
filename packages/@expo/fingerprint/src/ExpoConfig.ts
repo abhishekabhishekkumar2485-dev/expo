@@ -18,7 +18,10 @@ export async function getExpoConfigAsync(
   config: ProjectConfig | null;
   loadedModules: LoadedModuleSource[] | null;
 }> {
-  const result = {
+  const result: {
+    config: ProjectConfig | null;
+    loadedModules: LoadedModuleSource[] | null;
+  } = {
     config: null,
     loadedModules: null,
   };
@@ -30,14 +33,20 @@ export async function getExpoConfigAsync(
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'expo-fingerprint-'));
   const ignoredFile = await createTempIgnoredFileAsync(tmpDir, options);
   try {
-    const { message } = await spawnWithIpcAsync(
-      'node',
-      [getExpoConfigLoaderPath(), path.resolve(projectRoot), ignoredFile],
-      { cwd: projectRoot }
+    // Load the config twice in parallel - once fully and once with config plugins skipped - and keep
+    // only the modules that applying plugins added. Diffing out the plugins-skipped run removes the
+    // config-loading framework (Babel, TypeScript, @expo/config, etc.) automatically, shrinking the
+    // exclusion allowlist from ~50 packages to a small residual. Running them as two processes keeps
+    // each module cache clean; `Promise.all` makes the second pass essentially free in wall-clock.
+    const [full, withoutPlugins] = await Promise.all([
+      spawnConfigLoaderAsync(projectRoot, ignoredFile, /* skipPlugins */ false),
+      spawnConfigLoaderAsync(projectRoot, ignoredFile, /* skipPlugins */ true),
+    ]);
+    result.config = full.config;
+    result.loadedModules = diffLoadedModules(
+      full.loadedModules ?? [],
+      withoutPlugins.loadedModules ?? []
     );
-    const stdoutJson = JSON.parse(message);
-    result.config = stdoutJson.config;
-    result.loadedModules = stdoutJson.loadedModules;
   } catch (e: unknown) {
     if (e instanceof Error) {
       console.warn(`Cannot get Expo config from an Expo project - ${e.message}: `, e.stack);
@@ -49,6 +58,47 @@ export async function getExpoConfigAsync(
   }
 
   return result;
+}
+
+async function spawnConfigLoaderAsync(
+  projectRoot: string,
+  ignoredFile: string,
+  skipPlugins: boolean
+): Promise<{ config: ProjectConfig | null; loadedModules: LoadedModuleSource[] | null }> {
+  const args = [getExpoConfigLoaderPath(), path.resolve(projectRoot), ignoredFile];
+  if (skipPlugins) {
+    args.push('--skip-plugins');
+  }
+  const { message } = await spawnWithIpcAsync('node', args, { cwd: projectRoot });
+  return JSON.parse(message);
+}
+
+/**
+ * Keep only the config-plugin modules attributable to applying plugins.
+ *
+ * Anything that also loads when plugins are skipped is the config-loading framework and is dropped.
+ * In-repo files are always kept regardless of the diff, so a local plugin imported at the top of
+ * `app.config` (which loads during config evaluation, not plugin application) is never lost.
+ */
+export function diffLoadedModules(
+  full: LoadedModuleSource[],
+  withoutPlugins: LoadedModuleSource[]
+): LoadedModuleSource[] {
+  const skippedKeys = new Set(withoutPlugins.map(getLoadedModuleKey));
+  return full.filter(
+    (source) => isInRepoLoadedModule(source) || !skippedKeys.has(getLoadedModuleKey(source))
+  );
+}
+
+function getLoadedModuleKey(source: LoadedModuleSource): string {
+  return source.type === 'file' ? source.path : source.id;
+}
+
+function isInRepoLoadedModule(source: LoadedModuleSource): boolean {
+  const key = getLoadedModuleKey(source);
+  // A key that stays within the project and isn't in node_modules is an in-repo file (e.g. a local
+  // config plugin). Keys starting with `..` point outside the project (e.g. hoisted/linked deps).
+  return !key.startsWith('..') && !key.includes('node_modules');
 }
 
 /**

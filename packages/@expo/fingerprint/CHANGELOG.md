@@ -16,6 +16,7 @@
 ### 💡 Others
 
 - Added more default `getConfig` exclusion packages. ([#47503](https://github.com/expo/expo/pull/47503) by [@kudo](https://github.com/kudo))
+- Derived config-plugin modules by diffing a plugins-skipped config load, shrinking the config-loading module allowlist from ~50 packages to a small residual. ([#47678](https://github.com/expo/expo/pull/47678) by [@kudo](https://github.com/kudo))
 
 ## 0.19.3 — 2026-05-26
 
