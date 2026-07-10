@@ -3,7 +3,18 @@ import WebKit
 
 public class TestModule: Module {
   public func definition() -> ModuleDefinition {
-    Events("event1", "event2", "event3")
+    Events(
+      "event1",
+      "event2",
+      "event3",
+      globalEventName,
+      privateGlobalEventName,
+      EventNames.staticLetEvent,
+      EventNames.staticVarEvent,
+      EventStructNamespace.structEvent,
+      EventClassNamespace.classEvent,
+      OuterNamespace.InnerNamespace.nestedEvent
+    )
 
     Constant("StringConstant") { () -> Int in
       return "Swift constant 1283"
@@ -180,4 +191,33 @@ enum TestEnum {
   case simpleCase
   case multipleCases1, multipleCases2
   case caseWithArgs1(Int, Double, String), caseWithArgs2(Double, String, Either<Int, String>)
+}
+
+// Global variable resolved when referenced in an `Events` declaration.
+let globalEventName = "onGlobalEvent"
+
+// Private global variable resolved when referenced in an `Events` declaration.
+private let privateGlobalEventName = "onPrivateGlobalEvent"
+
+// Static members declared inside an enum used as a namespace.
+enum EventNames {
+  static let staticLetEvent = "onStaticLetEvent"
+  static var staticVarEvent = "onStaticVarEvent"
+}
+
+// Static member declared inside a struct used as a namespace.
+struct EventStructNamespace {
+  static let structEvent = "onStructEvent"
+}
+
+// Static member declared inside a class used as a namespace.
+class EventClassNamespace {
+  static let classEvent = "onClassEvent"
+}
+
+// Static member declared inside a nested namespace (enum inside an enum).
+enum OuterNamespace {
+  enum InnerNamespace {
+    static let nestedEvent = "onNestedEvent"
+  }
 }

@@ -88,6 +88,10 @@ function isClassStructure(structure: Structure): boolean {
   return structure['key.kind'] === swiftDeclarationKind.class;
 }
 
+function isStructStructure(structure: Structure): boolean {
+  return structure['key.kind'] === swiftDeclarationKind.struct;
+}
+
 function isRecordStructure(structure: Structure): boolean {
   const isRecordOrClass =
     structure['key.kind'] === swiftDeclarationKind.struct ||
@@ -1060,16 +1064,17 @@ function parseNamespaces(
   if (
     isModuleStructure(structure) ||
     isRecordStructure(structure) ||
+    isStructStructure(structure) ||
     isEnumStructure(structure) ||
     isClassStructure(structure)
   ) {
     const moduleName = structure['key.name'];
     namespaces[moduleName] = namespaces[moduleName] || {};
     const ns: namespace = namespaces[moduleName];
+    currentNamespace[moduleName] = ns;
     structure['key.substructure'].forEach((substructure) => {
       parseNamespaces(substructure, namespaces, file, ns);
     });
-    namespaces[moduleName] = ns;
     return;
   }
   if (
